@@ -33,16 +33,27 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.projectiles.ProjectileSource;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class EntityDamage implements Listener {
 
     private final ToolStats toolStats;
     // track mobs that are killed by a player
-    public final Set<UUID> trackedMobs = new HashSet<>();
+    public final Set<UUID> trackedMobs = ConcurrentHashMap.newKeySet();
     private final List<EntityDamageEvent.DamageCause> ignoredCauses = Arrays.asList(EntityDamageEvent.DamageCause.SUICIDE, EntityDamageEvent.DamageCause.VOID, EntityDamageEvent.DamageCause.CUSTOM, EntityDamageEvent.DamageCause.KILL);
 
     public EntityDamage(ToolStats toolStats) {
         this.toolStats = toolStats;
+    }
+
+    private void trackMob(LivingEntity mob) {
+        UUID mobId = mob.getUniqueId();
+        if (!trackedMobs.add(mobId)) {
+            return;
+        }
+
+        Bukkit.getAsyncScheduler().runDelayed(toolStats, scheduledTask -> trackedMobs.remove(mobId), 1, TimeUnit.SECONDS);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -89,8 +100,7 @@ public class EntityDamage implements Listener {
                 }
             }
 
-            trackedMobs.add(mobBeingAttacked.getUniqueId());
-            Bukkit.getGlobalRegionScheduler().runDelayed(toolStats, scheduledTask -> trackedMobs.remove(mobBeingAttacked.getUniqueId()), 20);
+            trackMob(mobBeingAttacked);
         }
 
         // something was hit by a trident
@@ -111,8 +121,7 @@ public class EntityDamage implements Listener {
                     }
                 }
 
-                trackedMobs.add(mobBeingAttacked.getUniqueId());
-                Bukkit.getGlobalRegionScheduler().runDelayed(toolStats, scheduledTask -> trackedMobs.remove(mobBeingAttacked.getUniqueId()), 20);
+                trackMob(mobBeingAttacked);
             }
         }
 
@@ -136,8 +145,7 @@ public class EntityDamage implements Listener {
                     }
                 }
 
-                trackedMobs.add(mobBeingAttacked.getUniqueId());
-                Bukkit.getGlobalRegionScheduler().runDelayed(toolStats, scheduledTask -> trackedMobs.remove(mobBeingAttacked.getUniqueId()), 20);
+                trackMob(mobBeingAttacked);
             }
         }
     }

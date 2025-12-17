@@ -18,8 +18,10 @@
 package lol.hyper.toolstats.events;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -36,21 +38,74 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
-import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.loot.Lootable;
 
 import lol.hyper.toolstats.ToolStats;
+import lol.hyper.toolstats.tools.BlockKey;
+import lol.hyper.toolstats.tools.ExpiringValue;
+import lol.hyper.toolstats.tools.PlayerRef;
 
 public class PlayerInteract implements Listener {
 
     private final ToolStats toolStats;
 
-    public final Map<Block, Player> openedChests = new HashMap<>();
-    public final Map<StorageMinecart, Player> openedMineCarts = new HashMap<>();
+    private static final long RECENT_OPEN_TTL_NANOS = TimeUnit.SECONDS.toNanos(1);
+
+    public final Map<BlockKey, ExpiringValue<PlayerRef>> openedChests = new ConcurrentHashMap<>();
+    public final Map<UUID, ExpiringValue<PlayerRef>> openedMineCarts = new ConcurrentHashMap<>();
 
     public PlayerInteract(ToolStats toolStats) {
         this.toolStats = toolStats;
+    }
+
+    public void trackLootableOpen(Block block, Player player) {
+        BlockKey key = BlockKey.of(block);
+        PlayerRef playerRef = new PlayerRef(player.getUniqueId(), player.getName());
+        ExpiringValue<PlayerRef> entry = new ExpiringValue<>(playerRef, System.nanoTime() + RECENT_OPEN_TTL_NANOS);
+        openedChests.put(key, entry);
+
+        Bukkit.getAsyncScheduler().runDelayed(toolStats, scheduledTask -> openedChests.remove(key, entry), 1, TimeUnit.SECONDS);
+    }
+
+    public void trackMinecartOpen(StorageMinecart minecart, Player player) {
+        UUID key = minecart.getUniqueId();
+        PlayerRef playerRef = new PlayerRef(player.getUniqueId(), player.getName());
+        ExpiringValue<PlayerRef> entry = new ExpiringValue<>(playerRef, System.nanoTime() + RECENT_OPEN_TTL_NANOS);
+        openedMineCarts.put(key, entry);
+
+        Bukkit.getAsyncScheduler().runDelayed(toolStats, scheduledTask -> openedMineCarts.remove(key, entry), 1, TimeUnit.SECONDS);
+    }
+
+    public PlayerRef getRecentLootableOpener(BlockKey key) {
+        ExpiringValue<PlayerRef> entry = openedChests.get(key);
+        if (entry == null) {
+            return null;
+        }
+
+        long now = System.nanoTime();
+        if (entry.isExpired(now)) {
+            openedChests.remove(key, entry);
+            return null;
+        }
+
+        return entry.value();
+    }
+
+    public PlayerRef getRecentMinecartOpener(UUID key) {
+        ExpiringValue<PlayerRef> entry = openedMineCarts.get(key);
+        if (entry == null) {
+            return null;
+        }
+
+        long now = System.nanoTime();
+        if (entry.isExpired(now)) {
+            openedMineCarts.remove(key, entry);
+            return null;
+        }
+
+        return entry.value();
     }
 
     @EventHandler
@@ -126,9 +181,8 @@ public class PlayerInteract implements Listener {
         }
         // store when a player opens a chest
         BlockState state = block.getState();
-        if (state instanceof InventoryHolder) {
-            openedChests.put(block, player);
-            Bukkit.getGlobalRegionScheduler().runDelayed(toolStats, scheduledTask -> openedChests.remove(block), 20);
+        if (state instanceof Lootable) {
+            trackLootableOpen(block, player);
         }
     }
 
@@ -142,8 +196,7 @@ public class PlayerInteract implements Listener {
         // store when a player opens a minecart
         if (clicked.getType() == EntityType.CHEST_MINECART) {
             StorageMinecart storageMinecart = (StorageMinecart) clicked;
-            openedMineCarts.put(storageMinecart, player);
-            Bukkit.getGlobalRegionScheduler().runDelayed(toolStats, scheduledTask -> openedMineCarts.remove(storageMinecart), 20);
+            trackMinecartOpen(storageMinecart, player);
         }
     }
 }

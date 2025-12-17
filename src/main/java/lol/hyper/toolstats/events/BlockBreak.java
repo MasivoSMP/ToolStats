@@ -18,7 +18,6 @@
 package lol.hyper.toolstats.events;
 
 import lol.hyper.toolstats.ToolStats;
-import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -56,8 +55,7 @@ public class BlockBreak implements Listener {
         Block block = event.getBlock();
 
         if (block.getType() == Material.CHEST) {
-            toolStats.playerInteract.openedChests.put(block, player);
-            Bukkit.getGlobalRegionScheduler().runDelayed(toolStats, scheduledTask -> toolStats.playerInteract.openedChests.remove(block), 20);
+            toolStats.playerInteract.trackLootableOpen(block, player);
         }
 
         // only check certain items
