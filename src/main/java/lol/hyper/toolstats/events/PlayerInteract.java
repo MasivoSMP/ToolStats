@@ -17,9 +17,13 @@
 
 package lol.hyper.toolstats.events;
 
-import lol.hyper.toolstats.ToolStats;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.entity.Entity;
@@ -31,10 +35,12 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
 
-import java.util.HashMap;
-import java.util.Map;
+import lol.hyper.toolstats.ToolStats;
 
 public class PlayerInteract implements Listener {
 
@@ -49,17 +55,73 @@ public class PlayerInteract implements Listener {
 
     @EventHandler
     public void onInteract(PlayerInteractEvent event) {
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
+        Player player = event.getPlayer();
+        if (player.getGameMode() == GameMode.CREATIVE && !toolStats.config.getBoolean("allow-creative")) {
+            return;
+        }
+
+        Action action = event.getAction();
+        if (action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK) {
+            ItemStack usedItem = event.getItem();
+            if (usedItem != null && usedItem.getType() == Material.MAP && toolStats.config.getBoolean("enabled.map-created-by")) {
+                PlayerInventory inventory = player.getInventory();
+                EquipmentSlot usedHand = event.getHand();
+                boolean usedMainHand = usedHand == null || usedHand == EquipmentSlot.HAND;
+                ItemStack[] before = Arrays.stream(inventory.getContents())
+                        .map(item -> item == null ? null : item.clone())
+                        .toArray(ItemStack[]::new);
+
+                player.getScheduler().runDelayed(toolStats, scheduledTask -> {
+                    // first we try the used hand
+                    if (usedMainHand) {
+                        ItemStack inMainHand = inventory.getItemInMainHand();
+                        if (inMainHand.getType() == Material.FILLED_MAP) {
+                            ItemStack updated = toolStats.itemLore.addMapCreatedBy(inMainHand, player);
+                            if (updated != null) {
+                                inventory.setItemInMainHand(updated);
+                                return;
+                            }
+                        }
+                    } else {
+                        ItemStack inOffHand = inventory.getItemInOffHand();
+                        if (inOffHand.getType() == Material.FILLED_MAP) {
+                            ItemStack updated = toolStats.itemLore.addMapCreatedBy(inOffHand, player);
+                            if (updated != null) {
+                                inventory.setItemInOffHand(updated);
+                                return;
+                            }
+                        }
+                    }
+
+                    // ..otherwise we scan the whole inventory for new maps
+                    ItemStack[] after = inventory.getContents();
+                    for (int i = 0; i < after.length; i++) {
+                        ItemStack afterItem = after[i];
+                        if (afterItem == null || afterItem.getType() != Material.FILLED_MAP) {
+                            continue;
+                        }
+
+                        ItemStack beforeItem = before.length > i ? before[i] : null;
+                        if (beforeItem != null && beforeItem.getType() == Material.FILLED_MAP) {
+                            continue;
+                        }
+
+                        ItemStack updated = toolStats.itemLore.addMapCreatedBy(afterItem, player);
+                        if (updated != null) {
+                            inventory.setItem(i, updated);
+                            return;
+                        }
+                    }
+                }, null, 1);
+            }
+        }
+
+        if (action != Action.RIGHT_CLICK_BLOCK) {
             return;
         }
 
         Block block = event.getClickedBlock();
         if (block == null) {
-            return;
-        }
-
-        Player player = event.getPlayer();
-        if (player.getGameMode() == GameMode.CREATIVE && !toolStats.config.getBoolean("allow-creative")) {
             return;
         }
         // store when a player opens a chest

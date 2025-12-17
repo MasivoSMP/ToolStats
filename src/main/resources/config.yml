@@ -285,6 +285,8 @@ enabled:
   arrows-shot: true
   flight-time: true
   crops-harvested: true
+  map-created-by: true
+  map-duplicated-by: true
 
 messages:
   crafted:
@@ -317,6 +319,9 @@ messages:
   arrows-shot: "&7Arrows shot: &8{arrows}"
   flight-time: "&7Flight time: &8{years}y {months}m {days}d {hours}h {minutes}m {seconds}s"
   damage-done: "&7Damage done: &8{damage}"
+  maps:
+    created-by: "&7Map created by: &8{player}"
+    duplicated-by: "&7Map duplicated by: &8{player}"
   # Set display name for mobs. See: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
   mobs:
     ZOMBIE: "Zombie"
@@ -346,4 +351,4 @@ normalize-time-creation: false
 # Allows stats and origins to be tracked if the player is in creative mode.
 allow-creative: false
 
-config-version: 13
+config-version: 14

@@ -44,6 +44,14 @@ public final class ToolStats extends JavaPlugin {
      */
     public final NamespacedKey itemOwner = new NamespacedKey(this, "owner");
     /**
+     * Stores who created a filled map.
+     */
+    public final NamespacedKey mapCreatedBy = new NamespacedKey(this, "map-created-by");
+    /**
+     * Stores who duplicated a filled map.
+     */
+    public final NamespacedKey mapDuplicatedBy = new NamespacedKey(this, "map-duplicated-by");
+    /**
      * Stores when the item was created.
      */
     public final NamespacedKey timeCreated = new NamespacedKey(this, "time-created");
@@ -119,7 +127,7 @@ public final class ToolStats extends JavaPlugin {
      */
     public final NamespacedKey originType = new NamespacedKey(this, "origin");
 
-    public final int CONFIG_VERSION = 13;
+    public final int CONFIG_VERSION = 14;
     public final ComponentLogger logger = this.getComponentLogger();
     public final File configFile = new File(this.getDataFolder(), "config.yml");
     public boolean tokens = false;
@@ -136,6 +144,7 @@ public final class ToolStats extends JavaPlugin {
     public PlayerInteract playerInteract;
     public SheepShear sheepShear;
     public VillagerTrade villagerTrade;
+    public CartographyDuplicate cartographyDuplicate;
     public CommandToolStats commandToolStats;
     public ItemLore itemLore;
     public InventoryOpen inventoryOpen;
@@ -191,6 +200,7 @@ public final class ToolStats extends JavaPlugin {
         playerInteract = new PlayerInteract(this);
         sheepShear = new SheepShear(this);
         villagerTrade = new VillagerTrade(this);
+        cartographyDuplicate = new CartographyDuplicate(this);
         commandToolStats = new CommandToolStats(this);
         itemLore = new ItemLore(this);
         inventoryOpen = new InventoryOpen(this);
@@ -226,6 +236,7 @@ public final class ToolStats extends JavaPlugin {
         Bukkit.getServer().getPluginManager().registerEvents(playerInteract, this);
         Bukkit.getServer().getPluginManager().registerEvents(sheepShear, this);
         Bukkit.getServer().getPluginManager().registerEvents(villagerTrade, this);
+        Bukkit.getServer().getPluginManager().registerEvents(cartographyDuplicate, this);
         Bukkit.getServer().getPluginManager().registerEvents(inventoryOpen, this);
         Bukkit.getServer().getPluginManager().registerEvents(playerJoin, this);
         Bukkit.getServer().getPluginManager().registerEvents(creativeEvent, this);

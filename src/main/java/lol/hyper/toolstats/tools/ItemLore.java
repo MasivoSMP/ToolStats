@@ -22,6 +22,8 @@ import lol.hyper.toolstats.ToolStats;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
@@ -1211,6 +1213,87 @@ public class ItemLore {
         return null;
     }
 
+    public ItemStack addMapCreatedBy(ItemStack inputMap, Player creator) {
+        if (!toolStats.config.getBoolean("enabled.map-created-by")) {
+            return null;
+        }
+        if (inputMap.getType() != Material.FILLED_MAP) {
+            return null;
+        }
+
+        ItemStack map = inputMap.clone();
+        ItemMeta meta = map.getItemMeta();
+        if (meta == null) {
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", map);
+            return null;
+        }
+
+        PersistentDataContainer container = meta.getPersistentDataContainer();
+        if (container.has(toolStats.mapCreatedBy, new UUIDDataType())) {
+            return null;
+        }
+
+        Component createdByLore = toolStats.configTools.formatLore("maps.created-by", "{player}", creator.getName());
+        if (createdByLore == null) {
+            return null;
+        }
+
+        List<Component> lore = meta.hasLore() ? meta.lore() : new ArrayList<>();
+        container.set(toolStats.mapCreatedBy, new UUIDDataType(), creator.getUniqueId());
+        lore.add(createdByLore);
+        meta.lore(lore);
+        map.setItemMeta(meta);
+        return map;
+    }
+
+    public ItemStack addMapDuplicatedBy(ItemStack inputMap, Player duplicator) {
+        if (!toolStats.config.getBoolean("enabled.map-duplicated-by")) {
+            return null;
+        }
+        if (inputMap.getType() != Material.FILLED_MAP) {
+            return null;
+        }
+
+        ItemStack map = inputMap.clone();
+        ItemMeta meta = map.getItemMeta();
+        if (meta == null) {
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", map);
+            return null;
+        }
+
+        PersistentDataContainer container = meta.getPersistentDataContainer();
+        Component newLoreLine = toolStats.configTools.formatLore("maps.duplicated-by", "{player}", duplicator.getName());
+        if (newLoreLine == null) {
+            return null;
+        }
+
+        List<Component> lore;
+        UUID previousDuplicator = container.get(toolStats.mapDuplicatedBy, new UUIDDataType());
+        if (previousDuplicator != null) {
+            String previousName = Bukkit.getOfflinePlayer(previousDuplicator).getName();
+            if (previousName != null) {
+                Component oldLoreLine = toolStats.configTools.formatLore("maps.duplicated-by", "{player}", previousName);
+                if (oldLoreLine != null) {
+                    lore = updateItemLore(meta, oldLoreLine, newLoreLine);
+                } else {
+                    lore = meta.hasLore() ? meta.lore() : new ArrayList<>();
+                    lore.add(newLoreLine);
+                }
+            } else {
+                lore = meta.hasLore() ? meta.lore() : new ArrayList<>();
+                lore.add(newLoreLine);
+            }
+        } else {
+            lore = meta.hasLore() ? meta.lore() : new ArrayList<>();
+            lore.add(newLoreLine);
+        }
+
+        container.set(toolStats.mapDuplicatedBy, new UUIDDataType(), duplicator.getUniqueId());
+        meta.lore(lore);
+        map.setItemMeta(meta);
+        return map;
+    }
+
     /**
      * Remove all stats, ownership, and creation time from an item.
      *
@@ -1351,6 +1434,34 @@ public class ItemLore {
                     if (ownerName != null) {
                         Component ownerLore = formatOwner(ownerName, origin, finalItem);
                         meta.lore(removeLore(meta.lore(), ownerLore));
+                    }
+                }
+            }
+
+            if (container.has(toolStats.mapCreatedBy)) {
+                UUID mapCreator = container.get(toolStats.mapCreatedBy, new UUIDDataType());
+                container.remove(toolStats.mapCreatedBy);
+                if (mapCreator != null) {
+                    String mapCreatorName = Bukkit.getOfflinePlayer(mapCreator).getName();
+                    if (mapCreatorName != null) {
+                        Component createdByLore = toolStats.configTools.formatLore("maps.created-by", "{player}", mapCreatorName);
+                        if (createdByLore != null) {
+                            meta.lore(removeLore(meta.lore(), createdByLore));
+                        }
+                    }
+                }
+            }
+
+            if (container.has(toolStats.mapDuplicatedBy)) {
+                UUID mapDuplicator = container.get(toolStats.mapDuplicatedBy, new UUIDDataType());
+                container.remove(toolStats.mapDuplicatedBy);
+                if (mapDuplicator != null) {
+                    String mapDuplicatorName = Bukkit.getOfflinePlayer(mapDuplicator).getName();
+                    if (mapDuplicatorName != null) {
+                        Component duplicatedByLore = toolStats.configTools.formatLore("maps.duplicated-by", "{player}", mapDuplicatorName);
+                        if (duplicatedByLore != null) {
+                            meta.lore(removeLore(meta.lore(), duplicatedByLore));
+                        }
                     }
                 }
             }
