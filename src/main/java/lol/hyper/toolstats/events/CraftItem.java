@@ -58,6 +58,38 @@ public class CraftItem implements Listener {
             return;
         }
         Material craftedMaterial = craftedItem.getType();
+
+        if (craftedMaterial == Material.FILLED_MAP && isMapDuplication(event)) {
+            if (event.isShiftClick()) {
+                ItemStack[] beforeCraft = player.getInventory().getContents();
+                player.getScheduler().runDelayed(toolStats, scheduledTask -> {
+                    ItemStack[] afterCraft = player.getInventory().getContents();
+                    for (int i = 0; i < afterCraft.length; i++) {
+                        ItemStack newSlotItem = afterCraft[i];
+                        if (newSlotItem == null || newSlotItem.getType() != Material.FILLED_MAP) {
+                            continue;
+                        }
+
+                        ItemStack oldSlotItem = beforeCraft[i];
+                        if (oldSlotItem != null) {
+                            continue;
+                        }
+
+                        ItemStack updated = toolStats.itemLore.addMapDuplicatedBy(newSlotItem, player);
+                        if (updated != null) {
+                            player.getInventory().setItem(i, updated);
+                        }
+                    }
+                }, null, 1);
+            } else {
+                ItemStack updated = toolStats.itemLore.addMapDuplicatedBy(craftedItem, player);
+                if (updated != null) {
+                    event.setCurrentItem(updated);
+                }
+            }
+            return;
+        }
+
         // only check certain items
         if (!toolStats.itemChecker.isValidItem(craftedMaterial)) {
             return;
@@ -167,5 +199,32 @@ public class CraftItem implements Listener {
         }
         newItem.setItemMeta(meta);
         return newItem;
+    }
+
+    private boolean isMapDuplication(CraftItemEvent event) {
+        if (!toolStats.config.getBoolean("enabled.map-duplicated-by")) {
+            return false;
+        }
+
+        int filledMaps = 0;
+        int emptyMaps = 0;
+        for (ItemStack item : event.getInventory().getMatrix()) {
+            if (item == null || item.getType() == Material.AIR) {
+                continue;
+            }
+            Material type = item.getType();
+            if (type == Material.FILLED_MAP) {
+                filledMaps++;
+            } else if (type == Material.MAP) {
+                emptyMaps++;
+            } else {
+                return false;
+            }
+            if (filledMaps > 1 || emptyMaps > 1) {
+                return false;
+            }
+        }
+
+        return filledMaps == 1 && emptyMaps == 1;
     }
 }
