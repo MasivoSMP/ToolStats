@@ -23,6 +23,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -34,9 +35,15 @@ import java.util.*;
 public class ItemLore {
 
     private final ToolStats toolStats;
+    private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
+    private final Map<Component, String> plainTextCache = Collections.synchronizedMap(new WeakHashMap<>());
 
     public ItemLore(ToolStats toolStats) {
         this.toolStats = toolStats;
+    }
+
+    private String toPlain(Component component) {
+        return plainTextCache.computeIfAbsent(component, PLAIN::serialize);
     }
 
     /**
@@ -51,13 +58,13 @@ public class ItemLore {
         List<Component> itemLore;
         if (itemMeta.hasLore()) {
             itemLore = itemMeta.lore();
+            String oldPlain = toPlain(oldLine);
             // keep track of line index
             // this doesn't mess the lore of existing items
             for (int x = 0; x < itemLore.size(); x++) {
-                String line = PlainTextComponentSerializer.plainText().serialize(itemLore.get(x));
                 // find the old line to update, keeping index
                 // this means we update this line only!
-                if (line.equals(PlainTextComponentSerializer.plainText().serialize(oldLine))) {
+                if (oldPlain.equals(toPlain(itemLore.get(x)))) {
                     itemLore.set(x, newLine);
                     return itemLore;
                 }
@@ -84,7 +91,66 @@ public class ItemLore {
             return Collections.emptyList();
         }
         List<Component> newLore = new ArrayList<>(inputLore);
-        newLore.removeIf(line -> PlainTextComponentSerializer.plainText().serialize(line).equals(PlainTextComponentSerializer.plainText().serialize(toRemove)));
+        String targetPlain = toPlain(toRemove);
+        newLore.removeIf(line -> targetPlain.equals(toPlain(line)));
+        return newLore;
+    }
+
+    private List<Component> updateItemLoreIndexed(ItemMeta itemMeta, PersistentDataContainer container, NamespacedKey indexKey, Component oldLine, Component newLine) {
+        List<Component> itemLore = itemMeta.hasLore() ? itemMeta.lore() : new ArrayList<>();
+        if (itemLore == null) {
+            itemLore = new ArrayList<>();
+        }
+
+        String oldPlain = toPlain(oldLine);
+        Integer cachedIndex = container.get(indexKey, PersistentDataType.INTEGER);
+        if (cachedIndex != null) {
+            int index = cachedIndex;
+            if (index >= 0 && index < itemLore.size()) {
+                if (oldPlain.equals(toPlain(itemLore.get(index)))) {
+                    itemLore.set(index, newLine);
+                    return itemLore;
+                }
+            }
+        }
+
+        for (int x = 0; x < itemLore.size(); x++) {
+            if (oldPlain.equals(toPlain(itemLore.get(x)))) {
+                itemLore.set(x, newLine);
+                container.set(indexKey, PersistentDataType.INTEGER, x);
+                return itemLore;
+            }
+        }
+
+        itemLore.add(newLine);
+        container.set(indexKey, PersistentDataType.INTEGER, itemLore.size() - 1);
+        return itemLore;
+    }
+
+    private List<Component> removeLoreIndexed(ItemMeta itemMeta, PersistentDataContainer container, NamespacedKey indexKey, Component toRemove) {
+        List<Component> currentLore = itemMeta.hasLore() ? itemMeta.lore() : null;
+        if (currentLore == null || currentLore.isEmpty()) {
+            container.remove(indexKey);
+            return Collections.emptyList();
+        }
+
+        String targetPlain = toPlain(toRemove);
+        Integer cachedIndex = container.get(indexKey, PersistentDataType.INTEGER);
+        if (cachedIndex != null) {
+            int index = cachedIndex;
+            if (index >= 0 && index < currentLore.size()) {
+                if (targetPlain.equals(toPlain(currentLore.get(index)))) {
+                    List<Component> newLore = new ArrayList<>(currentLore);
+                    newLore.remove(index);
+                    container.remove(indexKey);
+                    return newLore;
+                }
+            }
+        }
+
+        List<Component> newLore = new ArrayList<>(currentLore);
+        newLore.removeIf(line -> targetPlain.equals(toPlain(line)));
+        container.remove(indexKey);
         return newLore;
     }
 
@@ -94,10 +160,9 @@ public class ItemLore {
      * @param playerTool The tool to update.
      */
     public ItemMeta updateCropsMined(ItemStack playerTool, int add) {
-        ItemStack clone = playerTool.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = playerTool.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", playerTool);
             return null;
         }
         // read the current stats from the item
@@ -113,6 +178,7 @@ public class ItemLore {
                     return null;
                 }
                 container.remove(toolStats.cropsHarvested);
+                container.remove(toolStats.loreIndexCropsMined);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -131,7 +197,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldCropsMinedFormatted = toolStats.numberFormat.formatInt(cropsMined);
                     Component lineToRemove = toolStats.configTools.formatLore("crops-harvested", "{crops}", oldCropsMinedFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexCropsMined, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -145,7 +211,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.cropsHarvested) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerTool);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -157,7 +223,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerTool);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -171,7 +237,7 @@ public class ItemLore {
 
         if (cropsMined == null) {
             cropsMined = 0;
-            toolStats.logger.warn("{} does not have valid crops-mined set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid crops-mined set! Resting to zero. This should NEVER happen.", playerTool);
         }
 
         container.set(toolStats.cropsHarvested, PersistentDataType.INTEGER, cropsMined + add);
@@ -182,7 +248,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexCropsMined, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -193,10 +259,9 @@ public class ItemLore {
      * @param playerTool The tool to update.
      */
     public ItemMeta updateBlocksMined(ItemStack playerTool, int add) {
-        ItemStack clone = playerTool.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = playerTool.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", playerTool);
             return null;
         }
 
@@ -204,13 +269,14 @@ public class ItemLore {
 
         // if it's disabled, don't update the stats
         // check to see if the item has the stats, remove them if it does
-        if (!toolStats.configTools.checkConfig(clone.getType(), "blocks-mined")) {
+        if (!toolStats.configTools.checkConfig(playerTool.getType(), "blocks-mined")) {
             if (container.has(toolStats.blocksMined)) {
                 Integer blocksMined = container.get(toolStats.blocksMined, PersistentDataType.INTEGER);
                 if (blocksMined == null) {
                     return null;
                 }
                 container.remove(toolStats.blocksMined);
+                container.remove(toolStats.loreIndexBlocksMined);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -229,7 +295,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldBlocksMinedFormatted = toolStats.numberFormat.formatInt(blocksMined);
                     Component lineToRemove = toolStats.configTools.formatLore("blocks-mined", "{blocks}", oldBlocksMinedFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexBlocksMined, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -242,7 +308,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.blocksMined) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerTool);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -254,7 +320,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerTool);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -270,7 +336,7 @@ public class ItemLore {
 
         if (blocksMined == null) {
             blocksMined = 0;
-            toolStats.logger.warn("{} does not have valid generic-mined set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid generic-mined set! Resting to zero. This should NEVER happen.", playerTool);
         }
 
         container.set(toolStats.blocksMined, PersistentDataType.INTEGER, blocksMined + add);
@@ -281,7 +347,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexBlocksMined, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -292,10 +358,9 @@ public class ItemLore {
      * @param playerWeapon The tool to update.
      */
     public ItemMeta updatePlayerKills(ItemStack playerWeapon, int add) {
-        ItemStack clone = playerWeapon.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = playerWeapon.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", playerWeapon);
             return null;
         }
 
@@ -303,13 +368,14 @@ public class ItemLore {
 
         // if it's disabled, don't update the stats
         // check to see if the item has the stats, remove them if it does
-        if (!toolStats.configTools.checkConfig(clone.getType(), "player-kills")) {
+        if (!toolStats.configTools.checkConfig(playerWeapon.getType(), "player-kills")) {
             if (container.has(toolStats.playerKills)) {
                 Integer playerKills = container.get(toolStats.playerKills, PersistentDataType.INTEGER);
                 if (playerKills == null) {
                     return null;
                 }
                 container.remove(toolStats.playerKills);
+                container.remove(toolStats.loreIndexPlayerKills);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -328,7 +394,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldPlayerKillsFormatted = toolStats.numberFormat.formatInt(playerKills);
                     Component lineToRemove = toolStats.configTools.formatLore("player-kills", "{kills}", oldPlayerKillsFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexPlayerKills, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -342,7 +408,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.playerKills) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerWeapon);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -354,7 +420,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerWeapon);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -368,7 +434,7 @@ public class ItemLore {
 
         if (playerKills == null) {
             playerKills = 0;
-            toolStats.logger.warn("{} does not have valid player-kills set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid player-kills set! Resting to zero. This should NEVER happen.", playerWeapon);
         }
 
         container.set(toolStats.playerKills, PersistentDataType.INTEGER, playerKills + add);
@@ -379,7 +445,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexPlayerKills, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -390,10 +456,9 @@ public class ItemLore {
      * @param playerWeapon The tool to update.
      */
     public ItemMeta updateMobKills(ItemStack playerWeapon, int add) {
-        ItemStack clone = playerWeapon.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = playerWeapon.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", playerWeapon);
             return null;
         }
 
@@ -401,13 +466,14 @@ public class ItemLore {
 
         // if it's disabled, don't update the stats
         // check to see if the item has the stats, remove them if it does
-        if (!toolStats.configTools.checkConfig(clone.getType(), "mob-kills")) {
+        if (!toolStats.configTools.checkConfig(playerWeapon.getType(), "mob-kills")) {
             if (container.has(toolStats.mobKills)) {
                 Integer mobKills = container.get(toolStats.mobKills, PersistentDataType.INTEGER);
                 if (mobKills == null) {
                     return null;
                 }
                 container.remove(toolStats.mobKills);
+                container.remove(toolStats.loreIndexMobKills);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -426,7 +492,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldMobKillsFormatted = toolStats.numberFormat.formatInt(mobKills);
                     Component lineToRemove = toolStats.configTools.formatLore("mob-kills", "{kills}", oldMobKillsFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexMobKills, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -440,7 +506,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.mobKills) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerWeapon);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -452,7 +518,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(playerWeapon);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -466,7 +532,7 @@ public class ItemLore {
 
         if (mobKills == null) {
             mobKills = 0;
-            toolStats.logger.warn("{} does not have valid mob-kills set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid mob-kills set! Resting to zero. This should NEVER happen.", playerWeapon);
         }
 
         container.set(toolStats.mobKills, PersistentDataType.INTEGER, mobKills + add);
@@ -477,7 +543,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexMobKills, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -496,10 +562,9 @@ public class ItemLore {
                 return null;
             }
         }
-        ItemStack clone = armorPiece.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = armorPiece.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", armorPiece);
             return null;
         }
 
@@ -514,6 +579,7 @@ public class ItemLore {
                     return null;
                 }
                 container.remove(toolStats.armorDamage);
+                container.remove(toolStats.loreIndexArmorDamage);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -532,7 +598,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldDamageTakenFormatted = toolStats.numberFormat.formatDouble(armorDamage);
                     Component lineToRemove = toolStats.configTools.formatLore("damage-taken", "{damage}", oldDamageTakenFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexArmorDamage, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -546,7 +612,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.armorDamage) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(armorPiece);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -558,7 +624,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(armorPiece);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -572,7 +638,7 @@ public class ItemLore {
 
         if (damageTaken == null) {
             damageTaken = 0.0;
-            toolStats.logger.warn("{} does not have valid damage-taken set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid damage-taken set! Resting to zero. This should NEVER happen.", armorPiece);
         }
 
         container.set(toolStats.armorDamage, PersistentDataType.DOUBLE, damageTaken + damage);
@@ -583,7 +649,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexArmorDamage, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -602,10 +668,9 @@ public class ItemLore {
                 return null;
             }
         }
-        ItemStack clone = weapon.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = weapon.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", weapon);
             return null;
         }
 
@@ -613,13 +678,14 @@ public class ItemLore {
 
         // if it's disabled, don't update the stats
         // check to see if the item has the stats, remove them if it does
-        if (!toolStats.configTools.checkConfig(clone.getType(), "damage-done")) {
+        if (!toolStats.configTools.checkConfig(weapon.getType(), "damage-done")) {
             if (container.has(toolStats.damageDone)) {
                 Double damageDone = container.get(toolStats.damageDone, PersistentDataType.DOUBLE);
                 if (damageDone == null) {
                     return null;
                 }
                 container.remove(toolStats.damageDone);
+                container.remove(toolStats.loreIndexDamageDone);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -638,7 +704,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldDamageDoneFormatted = toolStats.numberFormat.formatDouble(damageDone);
                     Component lineToRemove = toolStats.configTools.formatLore("damage-done", "{damage}", oldDamageDoneFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexDamageDone, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -652,7 +718,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.damageDone) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(weapon);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -664,7 +730,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(weapon);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -678,7 +744,7 @@ public class ItemLore {
 
         if (damageDone == null) {
             damageDone = 0.0;
-            toolStats.logger.warn("{} does not have valid damage-done set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid damage-done set! Resting to zero. This should NEVER happen.", weapon);
         }
 
         container.set(toolStats.damageDone, PersistentDataType.DOUBLE, damageDone + damage);
@@ -689,7 +755,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexDamageDone, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -700,10 +766,9 @@ public class ItemLore {
      * @param elytra The player's elytra.
      */
     public ItemMeta updateFlightTime(ItemStack elytra, long duration) {
-        ItemStack clone = elytra.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = elytra.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", elytra);
             return null;
         }
 
@@ -718,6 +783,7 @@ public class ItemLore {
                     return null;
                 }
                 container.remove(toolStats.flightTime);
+                container.remove(toolStats.loreIndexFlightTime);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -744,7 +810,7 @@ public class ItemLore {
 
                     Map<String, String> oldFlightTimeFormatted = toolStats.numberFormat.formatTime(flightTime);
                     Component lineToRemove = toolStats.configTools.formatLoreMultiplePlaceholders("flight-time", oldFlightTimeFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexFlightTime, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -758,7 +824,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.flightTime) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(elytra);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -770,7 +836,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(elytra);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -805,7 +871,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexFlightTime, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -816,10 +882,9 @@ public class ItemLore {
      * @param shears The shears.
      */
     public ItemMeta updateSheepSheared(ItemStack shears, int add) {
-        ItemStack clone = shears.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = shears.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", shears);
             return null;
         }
 
@@ -834,6 +899,7 @@ public class ItemLore {
                     return null;
                 }
                 container.remove(toolStats.sheepSheared);
+                container.remove(toolStats.loreIndexSheepSheared);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -852,7 +918,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldSheepShearedFormatted = toolStats.numberFormat.formatDouble(sheepSheared);
                     Component lineToRemove = toolStats.configTools.formatLore("sheep-sheared", "{sheep}", oldSheepShearedFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexSheepSheared, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -866,7 +932,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.sheepSheared) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(shears);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -878,7 +944,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(shears);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -892,7 +958,7 @@ public class ItemLore {
 
         if (sheepSheared == null) {
             sheepSheared = 0;
-            toolStats.logger.warn("{} does not have valid sheared set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid sheared set! Resting to zero. This should NEVER happen.", shears);
         }
 
         container.set(toolStats.sheepSheared, PersistentDataType.INTEGER, sheepSheared + add);
@@ -903,7 +969,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexSheepSheared, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -914,10 +980,9 @@ public class ItemLore {
      * @param bow The bow.
      */
     public ItemMeta updateArrowsShot(ItemStack bow, int add) {
-        ItemStack clone = bow.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = bow.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", bow);
             return null;
         }
 
@@ -932,6 +997,7 @@ public class ItemLore {
                     return null;
                 }
                 container.remove(toolStats.arrowsShot);
+                container.remove(toolStats.loreIndexArrowsShot);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -950,7 +1016,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldArrowsShotFormatted = toolStats.numberFormat.formatDouble(arrowsShot);
                     Component lineToRemove = toolStats.configTools.formatLore("arrows-shot", "{arrows}", oldArrowsShotFormatted);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexArrowsShot, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -964,7 +1030,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.arrowsShot) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(bow);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -976,7 +1042,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(bow);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -1003,7 +1069,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexArrowsShot, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -1014,10 +1080,9 @@ public class ItemLore {
      * @param fishingRod The fishing rod.
      */
     public ItemMeta updateFishCaught(ItemStack fishingRod, int add) {
-        ItemStack clone = fishingRod.clone();
-        ItemMeta meta = clone.getItemMeta();
+        ItemMeta meta = fishingRod.getItemMeta();
         if (meta == null) {
-            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", clone);
+            toolStats.logger.warn("{} does NOT have any meta! Unable to update stats.", fishingRod);
             return null;
         }
 
@@ -1032,6 +1097,7 @@ public class ItemLore {
                     return null;
                 }
                 container.remove(toolStats.fishCaught);
+                container.remove(toolStats.loreIndexFishCaught);
                 // remove the applied token if this stat is disabled
                 if (container.has(toolStats.tokenApplied)) {
                     String appliedTokens = container.get(toolStats.tokenApplied, PersistentDataType.STRING);
@@ -1050,7 +1116,7 @@ public class ItemLore {
                 if (meta.hasLore()) {
                     String oldFishCaught = toolStats.numberFormat.formatDouble(fishCaught);
                     Component lineToRemove = toolStats.configTools.formatLore("fished.fish-caught", "{fish}", oldFishCaught);
-                    List<Component> newLore = removeLore(meta.lore(), lineToRemove);
+                    List<Component> newLore = removeLoreIndexed(meta, container, toolStats.loreIndexFishCaught, lineToRemove);
                     meta.lore(newLore);
                 }
                 return meta;
@@ -1064,7 +1130,7 @@ public class ItemLore {
         if (toolStats.config.getBoolean("tokens.enabled")) {
             // if the item has stats but no token, add the token
             if (container.has(toolStats.fishCaught) && !validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(fishingRod);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -1076,7 +1142,7 @@ public class ItemLore {
             }
         } else {
             if (!validToken) {
-                String newTokens = toolStats.itemChecker.addTokensToExisting(clone);
+                String newTokens = toolStats.itemChecker.addTokensToExisting(fishingRod);
                 if (newTokens != null) {
                     container.set(toolStats.tokenApplied, PersistentDataType.STRING, newTokens);
                 }
@@ -1090,7 +1156,7 @@ public class ItemLore {
 
         if (fishCaught == null) {
             fishCaught = 0;
-            toolStats.logger.warn("{} does not have valid fish-caught set! Resting to zero. This should NEVER happen.", clone);
+            toolStats.logger.warn("{} does not have valid fish-caught set! Resting to zero. This should NEVER happen.", fishingRod);
         }
 
         container.set(toolStats.fishCaught, PersistentDataType.INTEGER, fishCaught + add);
@@ -1101,7 +1167,7 @@ public class ItemLore {
         if (oldLine == null || newLine == null) {
             return null;
         }
-        List<Component> newLore = updateItemLore(meta, oldLine, newLine);
+        List<Component> newLore = updateItemLoreIndexed(meta, container, toolStats.loreIndexFishCaught, oldLine, newLine);
         meta.lore(newLore);
         return meta;
     }
@@ -1309,6 +1375,16 @@ public class ItemLore {
         if (container.has(toolStats.tokenApplied)) {
             container.remove(toolStats.tokenApplied);
         }
+        container.remove(toolStats.loreIndexPlayerKills);
+        container.remove(toolStats.loreIndexMobKills);
+        container.remove(toolStats.loreIndexBlocksMined);
+        container.remove(toolStats.loreIndexCropsMined);
+        container.remove(toolStats.loreIndexFishCaught);
+        container.remove(toolStats.loreIndexSheepSheared);
+        container.remove(toolStats.loreIndexArmorDamage);
+        container.remove(toolStats.loreIndexDamageDone);
+        container.remove(toolStats.loreIndexArrowsShot);
+        container.remove(toolStats.loreIndexFlightTime);
 
         if (container.has(toolStats.playerKills)) {
             Integer playerKills = container.get(toolStats.playerKills, PersistentDataType.INTEGER);
@@ -1317,7 +1393,7 @@ public class ItemLore {
 
                 String playerKillsFormatted = toolStats.numberFormat.formatInt(playerKills);
                 Component lineToRemove = toolStats.configTools.formatLore("kills.player", "{kills}", playerKillsFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexPlayerKills, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1327,7 +1403,7 @@ public class ItemLore {
                 container.remove(toolStats.mobKills);
                 String mobKillsFormatted = toolStats.numberFormat.formatInt(mobKills);
                 Component lineToRemove = toolStats.configTools.formatLore("kills.mob", "{kills}", mobKillsFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexMobKills, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1337,7 +1413,7 @@ public class ItemLore {
                 container.remove(toolStats.blocksMined);
                 String blocksMinedFormatted = toolStats.numberFormat.formatInt(blocksMined);
                 Component lineToRemove = toolStats.configTools.formatLore("blocks-mined", "{blocks}", blocksMinedFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexBlocksMined, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1347,7 +1423,7 @@ public class ItemLore {
                 container.remove(toolStats.cropsHarvested);
                 String cropsHarvestedFormatted = toolStats.numberFormat.formatInt(cropsHarvested);
                 Component lineToRemove = toolStats.configTools.formatLore("crops-harvested", "{crops}", cropsHarvestedFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexCropsMined, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1357,7 +1433,7 @@ public class ItemLore {
                 container.remove(toolStats.fishCaught);
                 String fishCaughtFormatted = toolStats.numberFormat.formatInt(fishCaught);
                 Component lineToRemove = toolStats.configTools.formatLore("fished.fish-caught", "{fish}", fishCaughtFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexFishCaught, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1367,7 +1443,7 @@ public class ItemLore {
                 container.remove(toolStats.sheepSheared);
                 String sheepShearedFormatted = toolStats.numberFormat.formatInt(sheepSheared);
                 Component lineToRemove = toolStats.configTools.formatLore("sheep.sheared", "{sheep}", sheepShearedFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexSheepSheared, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1377,7 +1453,7 @@ public class ItemLore {
                 container.remove(toolStats.armorDamage);
                 String armorDamageFormatted = toolStats.numberFormat.formatDouble(armorDamage);
                 Component lineToRemove = toolStats.configTools.formatLore("damage-taken", "{damage}", armorDamageFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexArmorDamage, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1387,7 +1463,7 @@ public class ItemLore {
                 container.remove(toolStats.damageDone);
                 String damageDoneFormatted = toolStats.numberFormat.formatDouble(damageDone);
                 Component lineToRemove = toolStats.configTools.formatLore("damage-done", "{damage}", damageDoneFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexDamageDone, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1398,7 +1474,7 @@ public class ItemLore {
 
                 String arrowsShotFormatted = toolStats.numberFormat.formatInt(arrowsShot);
                 Component lineToRemove = toolStats.configTools.formatLore("arrows-shot", "{arrows}", arrowsShotFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexArrowsShot, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }
@@ -1408,7 +1484,7 @@ public class ItemLore {
                 container.remove(toolStats.flightTime);
                 Map<String, String> flightTimeFormatted = toolStats.numberFormat.formatTime(flightTime);
                 Component lineToRemove = toolStats.configTools.formatLoreMultiplePlaceholders("flight-time", flightTimeFormatted);
-                meta.lore(removeLore(meta.lore(), lineToRemove));
+                meta.lore(removeLoreIndexed(meta, container, toolStats.loreIndexFlightTime, lineToRemove));
                 finalItem.setItemMeta(meta);
             }
         }

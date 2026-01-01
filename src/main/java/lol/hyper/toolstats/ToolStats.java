@@ -116,6 +116,19 @@ public final class ToolStats extends JavaPlugin {
      */
     public final NamespacedKey tokenApplied = new NamespacedKey(this, "token-applied");
     /**
+     * Lore index keys used to speed up stat line updates.
+     */
+    public final NamespacedKey loreIndexBlocksMined = new NamespacedKey(this, "lore-index-blocks-mined");
+    public final NamespacedKey loreIndexCropsMined = new NamespacedKey(this, "lore-index-crops-mined");
+    public final NamespacedKey loreIndexPlayerKills = new NamespacedKey(this, "lore-index-player-kills");
+    public final NamespacedKey loreIndexMobKills = new NamespacedKey(this, "lore-index-mob-kills");
+    public final NamespacedKey loreIndexArmorDamage = new NamespacedKey(this, "lore-index-armor-damage");
+    public final NamespacedKey loreIndexDamageDone = new NamespacedKey(this, "lore-index-damage-done");
+    public final NamespacedKey loreIndexSheepSheared = new NamespacedKey(this, "lore-index-sheep-sheared");
+    public final NamespacedKey loreIndexArrowsShot = new NamespacedKey(this, "lore-index-arrows-shot");
+    public final NamespacedKey loreIndexFlightTime = new NamespacedKey(this, "lore-index-flight-time");
+    public final NamespacedKey loreIndexFishCaught = new NamespacedKey(this, "lore-index-fish-caught");
+    /**
      * Stores how an item was created.
      * 0 = crafted.
      * 1 = dropped.
